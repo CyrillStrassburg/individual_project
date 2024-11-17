@@ -9,6 +9,8 @@ import timeit
 import math
 from kan.utils import SYMBOLIC_LIB
 from kan.utils import ex_round
+import matplotlib.pyplot as plt
+import matplotlib.lines as mlines
 
 #print(os.getcwd())
 
@@ -28,9 +30,9 @@ class Wind_KAN(MultKAN):
         self.epochs = 100
         self.train_predictions = 0
         # history elements: 
-        # Wind_fit_iter, Winde_prune_iter, Wind_grid, train_time, mse, mae, r2, Wind_train_loss, Wind_test_loss
+        # Wind_fit_iter, Wind_prune_iter, Wind_grid, train_time, mse, mae, r2, Wind_train_loss, Wind_test_loss
         self.Wind_fit_iter = [0, []]
-        self.Winde_prune_iter = [0, []]
+        self.Wind_prune_iter = [0, []]
         self.Wind_grid = [grid, []]
         self.train_time = [0, []]
         self.mse = [0, []]
@@ -120,47 +122,130 @@ class Wind_KAN(MultKAN):
 
         # update all metrics and history of the model
         self.Wind_train_loss[0] = last_train_loss[-1]
-        self.Wind_train_loss[1].append(last_train_loss)
+        self.Wind_train_loss[1] = self.Wind_train_loss[1] + last_train_loss
         self.Wind_test_loss[0] = last_test_loss[-1]
-        self.Wind_test_loss[1].append(last_test_loss)
+        self.Wind_test_loss[1] = self.Wind_test_loss[1] + last_test_loss
 
         self.Wind_fit_iter[0] += 1
-        self.Wind_fit_iter[1].append([self.Wind_fit_iter[0] for x in last_train_loss])
+        self.Wind_fit_iter[1] = self.Wind_fit_iter[1] + [self.Wind_fit_iter[0] for x in last_train_loss]
 
-        self.Winde_prune_iter[1].append([self.Winde_prune_iter[0] for x in last_train_loss])
-        self.Wind_grid[1].append([self.Wind_grid[0] for x in last_train_loss])
+        self.Wind_prune_iter[1] = self.Wind_prune_iter[1] + [self.Wind_prune_iter[0] for x in last_train_loss]
+        self.Wind_grid[1] = self.Wind_grid[1] + [self.Wind_grid[0] for x in last_train_loss]
 
         self.train_time[0] += train_time
-        self.train_time[1].append([train_time for x in last_train_loss])
+        self.train_time[1] = self.train_time[1] + [train_time for x in last_train_loss]
 
         y_test = (self.dataset['true_test_label'])
         
         self.mse[0] = mean_squared_error(y_test, self.train_predictions, squared=False)
-        self.mse[1].append([self.mse[0] for x in last_train_loss])
+        self.mse[1] = self.mse[1] + [self.mse[0] for x in last_train_loss]
 
         self.mae[0] = mean_absolute_error(y_test, self.train_predictions)
-        self.mae[1].append([self.mae[0] for x in last_train_loss])
+        self.mae[1] = self.mae[1] + [self.mae[0] for x in last_train_loss]
 
         self.r2[0] = r2_score(y_test, self.train_predictions)
-        self.r2[1].append([self.r2[0] for x in last_train_loss])
+        self.r2[1] = self.r2[1] + [self.r2[0] for x in last_train_loss]
         return results
 
-    def prune_model(self):
+    def prune_model(self, epochs=20):
         model = self.prune()
-        results = self.fit_model()
-        self.Winde_prune_iter[0] +=1
+        results = self.fit_model(epochs=epochs)
+        self.Wind_prune_iter[0] +=1
         return results
     
-    def refine_model(self, new_grid):
+    def refine_model(self, new_grid, epochs=20):
         model = self.refine(new_grid)
         self.Wind_grid[0] = new_grid
-        results = self.fit_model()
+        results = self.fit_model(epochs=epochs)
         return results
+
+    ################################################################
+    ########################### Plotting ###########################
+    ################################################################
     
     def plot_model(self, **kwargs):
         if self.first_plot == False:
             self(self.dataset['train_input'])
         super().plot()
+
+    def plot_history(self, variables):
+        """
+        Plots the history of chosen variables.
+        
+        Parameters:
+            variables (list of str): List of variable names to plot.
+        """
+        for var_name in variables:
+            if not hasattr(self, var_name):
+                print(f"Warning: Variable '{var_name}' not found in the class.")
+                continue
+
+            variable = getattr(self, var_name)
+            if not isinstance(variable, list) or len(variable) < 2:
+                print(f"Warning: Variable '{var_name}' does not follow the expected format.")
+                continue
+            
+            history = variable[1]  # Extract the history (second element)
+            plt.plot(history, label=var_name)
+        
+        plt.xlabel('Gradient descent iteration')
+        plt.ylabel('Value')
+        plt.title('History of Variables')
+        plt.legend()
+        plt.show()
+
+    def plot_history(self, var1_name, var2_name):
+        # Get variables dynamically using `getattr`
+        var1 = getattr(self, var1_name)
+        var2 = getattr(self, var2_name)
+
+        # Extract histories
+        var1_history = var1[1]
+        var2_history = var2[1]
+
+        # Identify vertical line positions (where events increased)
+        fit_lines = [i for i in range(1, len(self.Wind_fit_iter[1])) if self.Wind_fit_iter[1][i] > self.Wind_fit_iter[1][i - 1]]
+        prune_lines = [i for i in range(1, len(self.Wind_prune_iter[1])) if self.Wind_prune_iter[1][i] > self.Wind_prune_iter[1][i - 1]]
+        grid_lines = [i for i in range(1, len(self.Wind_grid[1])) if self.Wind_grid[1][i] > self.Wind_grid[1][i - 1]]
+
+        # Create the plot
+        fig, ax1 = plt.subplots()
+
+        # Plot the first variable
+        ax1.plot(var1_history, label=var1_name, color='blue')
+        ax1.set_xlabel("Iterations")
+        ax1.set_ylabel(var1_name, color='blue')
+        ax1.tick_params(axis='y', labelcolor='blue')
+
+        # Add vertical lines for events
+        for i, line in enumerate(fit_lines):
+            ax1.axvline(x=line, color='green', linestyle='--', label='_nolegend_')
+        for line in prune_lines:
+            ax1.axvline(x=line, color='orange', linestyle='--', label='_nolegend_')
+        for line in grid_lines:
+            ax1.axvline(x=line, color='red', linestyle='--', label='_nolegend_')
+
+        fit_handle = mlines.Line2D([], [], color='green', linestyle='--', label='Fit Iter Increase')
+        prune_handle = mlines.Line2D([], [], color='orange', linestyle='--', label='Prune Iter Increase')
+        grid_handle = mlines.Line2D([], [], color='red', linestyle='--', label='Grid Change')
+
+        # Create a second y-axis for the second variable
+        ax2 = ax1.twinx()
+        ax2.plot(var2_history, label=var2_name, color='red')
+        ax2.set_ylabel(var2_name, color='red')
+        ax2.tick_params(axis='y', labelcolor='red')
+
+        # Add legend
+        lines, labels = ax1.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax1.legend(lines + lines2 + [fit_handle, prune_handle, grid_handle],
+                   labels + labels2 + ['Fit Iter Increase', 'Prune Iter Increase', 'Grid Change'],
+                   loc='upper left')
+
+        # Show the plot
+        plt.title(f"History of {var1_name} and {var2_name}")
+        plt.tight_layout()
+        plt.show()
     
     # def print_history(self, iterations='all'):
     #     hist = self.stat_history
@@ -180,7 +265,7 @@ class Wind_KAN(MultKAN):
     ######################### OPTIMIZATION #########################
     ################################################################
 
-    def optimize_prune_refine(self, grid_increase=5,\
+    def optimize_prune_refine(self, grid_increase=5, epochs=20,\
                         min_prune_improvement=0.01, min_fit_improvement=0.01, min_refine_improvement=0.01,\
                         max_prune_iters=10, max_refine_iters=10, max_fit_iters=10):
 
@@ -195,35 +280,38 @@ class Wind_KAN(MultKAN):
 
         # iteration counters
         refine_iter = 0
+        refined_grid = self.Wind_grid[0]
         while refine_improvement >= min_refine_improvement and refine_iter <= max_refine_iters:
             refine_loss_old = refine_loss_new
 
             # prune loop
             prune_iter = 0
+            prune_improvement = 1000000
             while prune_improvement >= min_prune_improvement and prune_iter <= max_prune_iters:
                 prune_loss_old = prune_loss_new
 
                 # fitting loop
                 fit_iter = 0
+                fit_improvement = 1000000
                 while fit_improvement >= min_fit_improvement and fit_iter <= max_fit_iters:
                     fit_loss_old = fit_loss_new
-                    print('fitting iteration: ', fit_iter)
-                    results = self.fit_model()
+                    print('---------fitting iteration: ', fit_iter)
+                    results = self.fit_model(epochs=epochs)
                     fit_loss_new = results['train_loss'][-1]
                     fit_improvement = (fit_loss_old - fit_loss_new)/fit_loss_old
                     fit_iter += 1
 
                 # prune after fitted 
-                print('prune iteration: ', prune_iter)
-                results = self.prune_model()
+                print('---------prune iteration: ', prune_iter)
+                results = self.prune_model(epochs=epochs)
                 prune_loss_new = results['train_loss'][-1]
                 prune_improvement = (prune_loss_old - prune_loss_new)/prune_loss_old
                 prune_iter += 1
 
             # refine (increase grid) after pruned and fitted
-            print('refine iteration: ', refine_iter)
-            new_grid += grid_increase
-            results = self.refine_model(new_grid)
+            print('---------refine iteration: ', refine_iter)
+            refined_grid += grid_increase
+            results = self.refine_model(refined_grid, epochs=epochs)
             refine_loss_new = results['train_loss'][-1]
             refine_improvement = (refine_loss_old - refine_loss_new)/refine_loss_old
             refine_iter += 1
