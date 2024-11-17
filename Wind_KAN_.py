@@ -22,25 +22,26 @@ class Wind_KAN(MultKAN):
         super().__init__(width=width,grid=grid, k=k, seed=seed, *args, **kwargs)
         # predefined: width=[4,4,1], grid=3, k=3, seed=42, 
         self.winddata_path = 'No path yet'
-        self.save_act = False
+        self.save_act = True
         self.first_plot = False
         self.batch_size = -1
         self.epochs = 100
+        self.train_predictions = 0
         # history elements: 
-        # fit_iteration, prune_iteration, grid, train_time, mse, mae, r2, train_loss, test_loss
-        self.fit_iteration = 0
-        self.prune_iteration = 0
-        self.grid = grid
-        self.train_time = 0
-        self.mse = 0
-        self.mae = 0
-        self.r2 = 0
-        self.train_loss = 0
-        self.test_loss = 0
-        self.stat_history = []
+        # Wind_fit_iter, Winde_prune_iter, Wind_grid, train_time, mse, mae, r2, Wind_train_loss, Wind_test_loss
+        self.Wind_fit_iter = [0, []]
+        self.Winde_prune_iter = [0, []]
+        self.Wind_grid = [grid, []]
+        self.train_time = [0, []]
+        self.mse = [0, []]
+        self.mae = [0, []]
+        self.r2 = [0, []]
+        self.Wind_train_loss = [0, []]
+        self.Wind_test_loss = [0, []]
 
 
-    def get_winddataset(self, winddata_path, train_val_split = 0.1, train_test_split = 0.1, out=False):
+    def get_winddataset(self, winddata_path, set_float=True, \
+                        train_val_split = 0.1, train_test_split = 0.1, out=False):
         self.winddata_path = winddata_path
         data = pd.read_csv(self.winddata_path)
         Y = data.iloc[:, 2].values.astype(np.float64)
@@ -67,65 +68,92 @@ class Wind_KAN(MultKAN):
         tensor_data_list[3] = tensor_data_list[3].unsqueeze(1)  # y_val
         tensor_data_list[5] = tensor_data_list[5].unsqueeze(1)  # y_test
 
-        # The KAN Class trains on train/validation called train_input/test_input
-        self.dataset = { 'train_input': tensor_data_list[0].float(),
-                    'train_label': tensor_data_list[1].float(),
-                    'test_input': tensor_data_list[2].float(),
-                    'test_label': tensor_data_list[3].float(),
-                    'true_test_input': tensor_data_list[4].float(),
-                    'true_test_label': tensor_data_list[5].float()  }
-    
-    ################################################################
-    ###################### FITTING/TUNING HP #######################
-    ################################################################
-    
-    def update_history(self):
-        predictions = self(self.dataset['true_test_input'])
-        if predictions.isnan().any():
-            raise ValueError(f'nan detected {error_place} iteration {self.fit_iteration}')
-        current_values = [self.fit_iteration, self.prune_iteration, self.grid, self.train_time,\
-                            self.mse, self.mae, self.r2, self.train_loss, self.test_loss]   
-        self.stat_history.append(current_values)
-        return
+        # The KAN Class trains on train/validation called train_input/test_input.
 
-    def update_metrics(self):
-        predictions = (self(self.dataset['true_test_input'])).detach().numpy()
-        y_test = (self.dataset['true_test_label'])
-        self.mse = mean_squared_error(y_test, predictions, squared=False)
-        self.mae = mean_absolute_error(y_test, predictions)
-        self.r2 = r2_score(y_test, predictions)
+        # There is a really weird inconsistency with .float32 being the explicit datatype depending on whether
+        # the tensors are set to it. We need it to be non specific
+        # the output when printing should be:
+        # tensor([...]) NOT tensor([...], dtype=torch.float64)
+        # change set_float if this is not the case
+
+        if set_float == True:
+            # The KAN Class trains on train/validation called train_input/test_input
+            self.dataset = { 'train_input': tensor_data_list[0].float(),
+                        'train_label': tensor_data_list[1].float(),
+                        'test_input': tensor_data_list[2].float(),
+                        'test_label': tensor_data_list[3].float(),
+                        'true_test_input': tensor_data_list[4].float(),
+                        'true_test_label': tensor_data_list[5].float()  }
+        elif set_float == False:
+            self.dataset = { 'train_input': tensor_data_list[0],
+                        'train_label': tensor_data_list[1],
+                        'test_input': tensor_data_list[2],
+                        'test_label': tensor_data_list[3],
+                        'true_test_input': tensor_data_list[4],
+                        'true_test_label': tensor_data_list[5]  }
+    
+    ################################################################
+    ###################### FITTING #######################
+    ################################################################
             
-    def fit_model(self, epochs=20, batch_size=-1, **kwargs):
+    def fit_model(self, epochs=20, batch_size=-1, track_time=False, **kwargs):
+        
         train_data_length = self.dataset['train_input'].shape[0]
         if batch_size != -1 or batch_size > train_data_length:
             steps = train_data_length*epochs/batch_size
         else:
             steps = epochs
+
+        # the actual fitting
         start = timeit.default_timer()
-        print('steps: ', steps); print('batchsize: ', batch_size)
-        results = super().fit(dataset=self.dataset, steps=math.ceil(steps), batch=batch_size, **kwargs)
-        print('fitted')
+        results = self.fit(dataset=self.dataset, steps=math.ceil(steps), batch=batch_size, **kwargs)
         stop = timeit.default_timer()
         train_time = stop-start
-        last_train_loss = results['train_loss'][-1]
-        last_test_loss = results['test_loss'][-1]
-        self.train_time = train_time
-        self.fit_iteration += 1
-        self.train_loss = last_train_loss
-        self.test_loss = last_test_loss
-        self.update_metrics()
-        self.update_history()
+        last_train_loss = [float(x) for x in results['train_loss']]
+        last_test_loss = [float(x) for x in results['test_loss']]
+
+        # check for nans in train dataset predictions
+        predictions = self(self.dataset['true_test_input'])
+        if predictions.isnan().any():
+            raise ValueError(f'nan detected {error_place} iteration {self.Wind_fit_iter}')
+        self.train_predictions = predictions.detach().numpy()
+
+        # update all metrics and history of the model
+        self.Wind_train_loss[0] = last_train_loss[-1]
+        self.Wind_train_loss[1].append(last_train_loss)
+        self.Wind_test_loss[0] = last_test_loss[-1]
+        self.Wind_test_loss[1].append(last_test_loss)
+
+        self.Wind_fit_iter[0] += 1
+        self.Wind_fit_iter[1].append([self.Wind_fit_iter[0] for x in last_train_loss])
+
+        self.Winde_prune_iter[1].append([self.Winde_prune_iter[0] for x in last_train_loss])
+        self.Wind_grid[1].append([self.Wind_grid[0] for x in last_train_loss])
+
+        self.train_time[0] += train_time
+        self.train_time[1].append([train_time for x in last_train_loss])
+
+        y_test = (self.dataset['true_test_label'])
+        
+        self.mse[0] = mean_squared_error(y_test, self.train_predictions, squared=False)
+        self.mse[1].append([self.mse[0] for x in last_train_loss])
+
+        self.mae[0] = mean_absolute_error(y_test, self.train_predictions)
+        self.mae[1].append([self.mae[0] for x in last_train_loss])
+
+        self.r2[0] = r2_score(y_test, self.train_predictions)
+        self.r2[1].append([self.r2[0] for x in last_train_loss])
         return results
-    
-    def prune_model(self, iterations=1, epochs=100, batch_size=-1):
-        self.prune_model()
-        self.prune_iteration += 1
+
+    def prune_model(self):
+        model = self.prune()
         results = self.fit_model()
+        self.Winde_prune_iter[0] +=1
         return results
     
-    def refine_model(self, new_grid, iterations=1, epochs=100, batch_size=-1):
-        self.refine(new_grid)
-        self.grid = new_grid
+    def refine_model(self, new_grid):
+        model = self.refine(new_grid)
+        self.Wind_grid[0] = new_grid
         results = self.fit_model()
         return results
     
@@ -134,70 +162,72 @@ class Wind_KAN(MultKAN):
             self(self.dataset['train_input'])
         super().plot()
     
-    def print_history(self, iterations='all'):
-        hist = self.stat_history
-        if iterations == 'all':
-            iterations = len(hist)
-        elif iterations > len(hist):
-            iterations = len(hist)
-        for i in reversed(range(iterations)):
-            current_m = hist[-i-1]
-            print('fit iter:', current_m[-7], '  prune iter:', current_m[-6], '  grid:', current_m[-5],\
-                 '  train_time:', round(current_m[-4],2),\
-                 '  mse:', round(current_m[-3],3), '  mae:', round(current_m[-2],3), '  r2:', round(current_m[-1],3))
+    # def print_history(self, iterations='all'):
+    #     hist = self.stat_history
+    #     if iterations == 'all':
+    #         iterations = len(hist)
+    #     elif iterations > len(hist):
+    #         iterations = len(hist)
+    #     for i in reversed(range(iterations)):
+    #         current_m = hist[-i-1]
+    #         print(type(current_m), '\n', current_m)
+    #         print('fit iter:', current_m[-7], '  prune iter:', current_m[-6], '  grid:', current_m[-5],\
+    #              '  train_time:', round(current_m[-4],2),\
+    #              '  mse:', round(current_m[-3],3), '  mae:', round(current_m[-2],3), '  r2:', round(current_m[-1],3))
 
+
+    ################################################################
+    ######################### OPTIMIZATION #########################
+    ################################################################
 
     def optimize_prune_refine(self, grid_increase=5,\
-                        min_prune_improvement, min_fit_improvement, min_refine_improvement,\
+                        min_prune_improvement=0.01, min_fit_improvement=0.01, min_refine_improvement=0.01,\
                         max_prune_iters=10, max_refine_iters=10, max_fit_iters=10):
-    # opt_history: all losses including during fitting
-    # self.stat_history: all changes after calling fit
 
-    opt_history = {'train_losses': [], 'test_losses': [], 'prune_location': [], 'refine_location': []}
-    # initiating gammas
-    fit_improvement = 1000000
-    prune_improvement = 1000000
-    refine_improvement = 1000000
-    # iteration counters
-    refine_iter = 0
-    while refine_improvement >= min_refine_improvement and refine_iter <= max_refine_iters:
-        prune_iter = 0
-        while prune_improvement >= min_prune_improvement and prune_iter <= max_prune_iters:
-            fit_iter = 0
-            # fitting loop
-            while fit_improvement >= min_fit_improvement and fit_iter <= max_fit_iters:
-                results = self.fit_model()
-                fit_loss_0 = opt_history['train_losses'][-1]
-                opt_history['train_losses'].extend(results['train_loss'])
-                opt_history['test_losses'].extend(results['test_loss'])
-                zeroes = [0 for x in range(len(results['train_loss']))]
-                opt_history['prune_location'].extend(zeroes)
-                opt_history['refine_location'].extend(zeroes)
-                fit_improvement = (fit_loss_0 - results['train_loss'][-1])/fit_loss_0
-                fit_iter += 1
-            # prune after fitted
-            results = self.prune_model()
-            prune_loss_0 = results['train_loss'][-1]
-            opt_history['train_losses'].extend(results['train_loss'])
-            opt_history['test_losses'].extend(results['test_loss'])
-            zeroes = [0 for x in range(len(results['train_loss']))]
-            prune_indices = [1 if x==0 else 0 for x in range(len(results['train_loss']))]
-            opt_history['prune_location'].extend(prune_indices)
-            opt_history['refine_location'].extend(zeroes)
-            prune_iter += 1
-            prune_improvement = (prune_loss_0 - opt_history['train_losses'][-1])/prune_loss_0
-        # refine (increase grid) after pruned and fitted
-        grid += grid_increase
-        results = self.refine_model(new_grid=grid)
-        refine_loss_0 = results['train_losses']
-        opt_history['train_losses'].extend(results['train_loss'])
-        opt_history['test_losses'].extend(results['test_loss'])
-        zeroes = [0 for x in range(len(results['train_loss']))]
-        refine_indices = [1 if x==0 else 0 for x in range(len(results['train_loss']))]
-        opt_history['prune_location'].extend(zeroes)
-        opt_history['refine_location'].extend(refine_indices)
-        refine_iter += 1
-        refine_gamma = (refine_loss_0 - opt_history['train_losses'][-1])/refine_loss_0
+        # initiating losses
+        fit_loss_new = 100000
+        prune_loss_new = 100000
+        refine_loss_new = 100000
+        # initiating gammas
+        fit_improvement = 1000000
+        prune_improvement = 1000000
+        refine_improvement = 1000000
+
+        # iteration counters
+        refine_iter = 0
+        while refine_improvement >= min_refine_improvement and refine_iter <= max_refine_iters:
+            refine_loss_old = refine_loss_new
+
+            # prune loop
+            prune_iter = 0
+            while prune_improvement >= min_prune_improvement and prune_iter <= max_prune_iters:
+                prune_loss_old = prune_loss_new
+
+                # fitting loop
+                fit_iter = 0
+                while fit_improvement >= min_fit_improvement and fit_iter <= max_fit_iters:
+                    fit_loss_old = fit_loss_new
+                    print('fitting iteration: ', fit_iter)
+                    results = self.fit_model()
+                    fit_loss_new = results['train_loss'][-1]
+                    fit_improvement = (fit_loss_old - fit_loss_new)/fit_loss_old
+                    fit_iter += 1
+
+                # prune after fitted 
+                print('prune iteration: ', prune_iter)
+                results = self.prune_model()
+                prune_loss_new = results['train_loss'][-1]
+                prune_improvement = (prune_loss_old - prune_loss_new)/prune_loss_old
+                prune_iter += 1
+
+            # refine (increase grid) after pruned and fitted
+            print('refine iteration: ', refine_iter)
+            new_grid += grid_increase
+            results = self.refine_model(new_grid)
+            refine_loss_new = results['train_loss'][-1]
+            refine_improvement = (refine_loss_old - refine_loss_new)/refine_loss_old
+            refine_iter += 1
+        return
 
     ################################################################
     ############################ FORMULA ###########################
